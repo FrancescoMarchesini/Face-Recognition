@@ -1,5 +1,9 @@
 #include <algorithm>
-#include "gstCamera.h"
+
+#include <stdio.h>
+#include <unistd.h>
+
+#include "gstPipeline.h"
 #include "glDisplay.h"
 #include "glTexture.h"
 
@@ -15,9 +19,9 @@ using namespace nvcaffeparser1;
 static const int BATCH_SIZE = 1;
 static const int TIMING_ITERATIONS = 100;
 
-const char* model  = "/home/nvidia/Face-Recognition/data/deploy.prototxt";
-const char* weight = "/home/nvidia/Face-Recognition/data/merge.caffemodel";
-const char* label  = "/home/nvidia/Face-Recognition/data/labels.txt";
+const char* model  = "deploy.prototxt";
+const char* weight = "merge.caffemodel";
+const char* label  = "labels.txt";
 
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_COV = "coverage_fd";
@@ -28,7 +32,7 @@ const char* OUTPUT_BLOB_IDX = "bbox_id";
 const char* OUTPUT_BLOB_RES = "softmax_fr";
 const char* OUTPUT_BLOB_LAB = "label";
 
-#define DEFAULT_CAMERA -1        // -1 for onboard camera, or change to index of /dev/video V4L2 camera (>=0)    
+#define DEFAULT_pipeline -1        // -1 for onboard pipeline, or change to index of /dev/video V4L2 pipeline (>=0)
 
 cudaError_t cudaPreImageNetMean( float4* input, size_t inputWidth, size_t inputHeight, float* output, size_t outputWidth, size_t outputHeight, const float3& mean_value );
 
@@ -142,22 +146,28 @@ int main(int argc, char** argv)
     std::cout << "Building and running a GPU inference engine for " << model << ", N=" << BATCH_SIZE << "..." << std::endl;
 
 
-    /* camera */
+    /* pipeline */
     if( signal(SIGINT, sig_handler) == SIG_ERR )
         printf("\ncan't catch SIGINT\n");
 
-    gstCamera* camera = gstCamera::Create(DEFAULT_CAMERA);
 
-    if( !camera )
+
+     // ss << "queue ! rtph264depay ! queue ! h264parse ! queue ! omxh264dec ! nvvidconv ! video/x-raw, format=NV12 ! queue ! appsink name=mysink";
+
+      gstPipeline* pipeline = gstPipeline::Create( "rtspsrc location=rtsp://root:root@192.168.1.90/axis-media/media.amp?resolution=1280x720  drop-on-latency=0 latency=100 ! queue max-size-buffers=200 max-size-time=1000000000  max-size-bytes=10485760 min-threshold-time=10 ! rtph264depay ! h264parse ! omxh264dec ! nvvidconv flip-method=2 ! video/x-raw, format=NV12 ! appsink name=mysink ", 1280, 720, 12 );
+
+   // gstpipeline* pipeline = gstpipeline::Create(DEFAULT_pipeline);
+
+    if( !pipeline )
     {
         printf("failed to initialize video device\n");
         return 0;
     }
 
     printf("successfully initialized video device\n");
-    printf("    width:  %u\n", camera->GetWidth());
-    printf("   height:  %u\n", camera->GetHeight());
-    printf("    depth:  %u (bpp)\n\n", camera->GetPixelDepth());
+    printf("    width:  %u\n", pipeline->GetWidth());
+    printf("   height:  %u\n", pipeline->GetHeight());
+    printf("    depth:  %u (bpp)\n\n", pipeline->GetPixelDepth());
 
 
     /* create networks */
@@ -177,15 +187,15 @@ int main(int argc, char** argv)
     }
     else
     {
-        texture = glTexture::Create(camera->GetWidth(), camera->GetHeight(), GL_RGBA32F_ARB/*GL_RGBA8*/);
+        texture = glTexture::Create(pipeline->GetWidth(), pipeline->GetHeight(), GL_RGBA32F_ARB/*GL_RGBA8*/);
         if( !texture ) printf("failed to create openGL texture\n");
     }
 
 
-    /* open camera */
-    if( !camera->Open() )
+    /* open pipeline */
+    if( !pipeline->Open() )
     {
-        printf("failed to open camera for streaming\n");
+        printf("failed to open pipeline for streaming\n");
         return 0;
     }
 
@@ -217,10 +227,10 @@ int main(int argc, char** argv)
         void* imgCUDA = NULL;
         void* imgRGBA = NULL;
 
-        if( !camera->Capture(&imgCPU, &imgCUDA, 1000) ) printf("failed to capture frame\n");
-        if( !camera->ConvertRGBA(imgCUDA, &imgRGBA) ) printf("failed to convert from NV12 to RGBA\n");
+        if( !pipeline->Capture(&imgCPU, &imgCUDA, 1000) ) printf("failed to capture frame\n");
+        if( !pipeline->ConvertRGBA(imgCUDA, &imgRGBA) ) printf("failed to convert from NV12 to RGBA\n");
 
-        if( CUDA_FAILED(cudaPreImageNetMean((float4*)imgRGBA, camera->GetWidth(), camera->GetHeight(), data, dimsData.w(), dimsData.h(), make_float3(127.0f, 127.0f, 127.0f))) )
+        if( CUDA_FAILED(cudaPreImageNetMean((float4*)imgRGBA, pipeline->GetWidth(), pipeline->GetHeight(), data, dimsData.w(), dimsData.h(), make_float3(127.0f, 127.0f, 127.0f))) )
         {
             printf("cudaPreImageNetMean failed\n");
             return 0;
@@ -230,12 +240,12 @@ int main(int argc, char** argv)
         void* buffers[] = {data, conf, bbox, num, sel, idx, res, lab};
         tensorNet.imageInference(buffers, 8, BATCH_SIZE);
 
-        const float scale_x = float(camera->GetWidth())  / float(dimsData.w());
-        const float scale_y = float(camera->GetHeight()) / float(dimsData.h());
+        const float scale_x = float(pipeline->GetWidth())  / float(dimsData.w());
+        const float scale_y = float(pipeline->GetHeight()) / float(dimsData.h());
 
         int numBoundingBoxes = int(num[0]);
-        DrawBoxes((float*)imgRGBA, (float*)imgRGBA, camera->GetWidth(), camera->GetHeight(), scale_x, scale_y, conf, bbox, numBoundingBoxes);
-        ShowClassification(font, imgRGBA, imgRGBA, camera->GetWidth(), camera->GetHeight(), lab, bbox, labelInfo, numBoundingBoxes);
+        DrawBoxes((float*)imgRGBA, (float*)imgRGBA, pipeline->GetWidth(), pipeline->GetHeight(), scale_x, scale_y, conf, bbox, numBoundingBoxes);
+        ShowClassification(font, imgRGBA, imgRGBA, pipeline->GetWidth(), pipeline->GetHeight(), lab, bbox, labelInfo, numBoundingBoxes);
 
         if( display != NULL )
         {
@@ -253,7 +263,7 @@ int main(int argc, char** argv)
             {
                 CUDA(cudaNormalizeRGBA((float4*)imgRGBA, make_float2(0.0f, 255.0f),
                                        (float4*)imgRGBA, make_float2(0.0f, 1.0f),
-                                       camera->GetWidth(), camera->GetHeight()));
+                                       pipeline->GetWidth(), pipeline->GetHeight()));
 
                 void* tex_map = texture->MapCUDA();
                 if( tex_map != NULL )
@@ -273,10 +283,10 @@ int main(int argc, char** argv)
     tensorNet.destroy();
     tensorNet.printTimes(TIMING_ITERATIONS);
 
-    if( camera != NULL )
+    if( pipeline != NULL )
     {
-        delete camera;
-        camera = NULL;
+        delete pipeline;
+        pipeline = NULL;
     }
 
     if( display != NULL )
