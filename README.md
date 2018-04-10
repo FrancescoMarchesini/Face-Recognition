@@ -1,1 +1,1 @@
-Face detectionfatto tramite tensorRT
+Face detection fatto tramite tensorRT
